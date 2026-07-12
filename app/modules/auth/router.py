@@ -5,6 +5,10 @@ from app.core.database import get_db
 from app.core.security import get_password_hash, verify_password, create_access_token # IMPORTANTE
 from app.modules.auth.models import User
 from app.modules.auth.schemas import UserCreate, UserResponse, Token
+import jwt
+from fastapi.security import OAuth2PasswordBearer
+from app.core.security import SECRET_KEY, ALGORITHM
+from app.modules.auth.schemas import TokenData
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -39,3 +43,34 @@ def login_user(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = D
     
     # 4. Retorna o token em formato JSON
     return {"access_token": access_token, "token_type": "bearer"}
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+    """Valida o Token JWT e retorna o usuário logado atual"""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Não foi possível validar as credenciais. Faça login novamente.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        # Descriptografa o token usando a nossa chave secreta
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+        token_data = TokenData(user_id=user_id)
+    except jwt.PyJWTError:
+        raise credentials_exception
+        
+    # Busca o usuário no banco usando o ID que estava dentro do token
+    user = db.query(User).filter(User.id == token_data.user_id).first()
+    if user is None:
+        raise credentials_exception
+        
+    return user
+
+@router.get("/me", response_model=UserResponse)
+def read_users_me(current_user: User = Depends(get_current_user)):
+    """Retorna os dados do usuário atualmente autenticado"""
+    return current_user
